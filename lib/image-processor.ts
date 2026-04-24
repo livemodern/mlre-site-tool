@@ -14,54 +14,57 @@ export interface ProcessResult {
   height: number;
 }
 
-const TARGETS = {
-  hero: { width: 2560, height: 895 },
-  standard: { width: 566, height: 500 },
-};
-
 /**
- * Download an image and process it to the Modern Living target dimensions:
- *   - Hero: 2560 x 895 (wide)
- *   - Standard: 566 x 500
+ * Download an image and process it:
  *
- * Uses Sharp's "cover" fit with attention-based cropping, which automatically
- * finds the most visually salient region — this avoids decapitating buildings,
- * cropping out pools, etc. better than a naive center crop.
+ * - HERO:     cover-cropped to 2560x895 with CENTER positioning. Center is
+ *             used (rather than sharp.strategy.attention) because attention-
+ *             based cropping sometimes latches onto a bright reflection or
+ *             person and produces an unpredictable slice. For a hero banner,
+ *             the user pre-selected the image, so we trust the natural center.
  *
- * Output is WebP with strip-metadata enabled.
+ * - STANDARD: resize so the LONGEST side equals 566px, preserving aspect
+ *             ratio. No cropping. Landscape photos end up 566 wide; portraits
+ *             end up 566 tall. Images smaller than 566 on every side are left
+ *             alone (withoutEnlargement: true).
+ *
+ * Output is always WebP with EXIF/metadata stripped.
  */
 export async function processImage(opts: ProcessOptions): Promise<ProcessResult> {
   const res = await fetch(opts.imageUrl, {
     headers: { 'User-Agent': USER_AGENT, Accept: 'image/*,*/*' },
     redirect: 'follow',
-    // 20s — big 8K source images from developer CDNs can be slow to deliver
     signal: AbortSignal.timeout(20000),
   });
   if (!res.ok) throw new Error(`Download failed: HTTP ${res.status}`);
   const arrayBuf = await res.arrayBuffer();
   const input = Buffer.from(arrayBuf);
 
-  const { width, height } = TARGETS[opts.variant];
+  let pipeline = sharp(input, { failOn: 'none' }).rotate(); // bake in EXIF orientation
 
-  // Quality tuned for web: hero gets slightly higher quality since it's the
-  // focal image; standard gets more aggressive compression.
-  const quality = opts.variant === 'hero' ? 82 : 78;
-
-  // Sharp strips metadata by default — do NOT call withMetadata() or EXIF/ICC
-  // profiles will be re-embedded. .rotate() above bakes orientation into pixels.
-  const buffer = await sharp(input, { failOn: 'none' })
-    .rotate() // respect EXIF orientation before stripping metadata
-    .resize(width, height, {
+  if (opts.variant === 'hero') {
+    pipeline = pipeline.resize(2560, 895, {
       fit: 'cover',
-      position: sharp.strategy.attention,
+      position: 'center',
       withoutEnlargement: false,
-    })
-    .webp({
-      quality,
-      effort: 4, // encoding effort: 0-6. 4 is a good quality/speed balance for serverless
-      smartSubsample: true,
-    })
+    });
+  } else {
+    // Longest side = 566, preserve aspect ratio, no crop
+    pipeline = pipeline.resize({
+      width: 566,
+      height: 566,
+      fit: 'inside',
+      withoutEnlargement: true,
+    });
+  }
+
+  const quality = opts.variant === 'hero' ? 82 : 80;
+
+  const buffer = await pipeline
+    .webp({ quality, effort: 4, smartSubsample: true })
     .toBuffer();
 
-  return { buffer, width, height };
+  // Read back the final dimensions (variable for standard variant)
+  const meta = await sharp(buffer).metadata();
+  return { buffer, width: meta.width ?? 0, height: meta.height ?? 0 };
 }

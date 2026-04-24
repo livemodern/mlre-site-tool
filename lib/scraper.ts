@@ -1,5 +1,5 @@
 import * as cheerio from 'cheerio';
-import type { ScrapedImage, ImageLabel } from './types';
+import type { ScrapedImage } from './types';
 
 const USER_AGENT =
   'Mozilla/5.0 (compatible; ModernLivingImageBot/1.0; +https://modernliving.example)';
@@ -181,7 +181,7 @@ function extractFromHtml(html: string, baseUrl: string): ScrapedImage[] {
       height: h,
       fingerprint: normalizeForDedup(c.url),
       isLikelyHero: Boolean(isLikelyHero),
-      suggestedLabel: guessLabel(c.url, c.alt),
+      suggestedDescriptor: guessDescriptor(c.url, c.alt),
     });
   }
   return results;
@@ -250,27 +250,33 @@ function pickWidestFromSrcset(srcset: string): string | undefined {
   return best?.url ?? parts[0]?.split(/\s+/)[0];
 }
 
-/** Heuristic label guess from URL path + alt text */
-function guessLabel(url: string, alt?: string): ImageLabel | undefined {
+/** Heuristic descriptor guess from URL path + alt text */
+function guessDescriptor(url: string, alt?: string): string | undefined {
   const hay = `${url} ${alt ?? ''}`.toLowerCase();
-  const rules: [RegExp, ImageLabel][] = [
-    [/\b(aerial|drone|birds[-_ ]?eye)\b/, 'aerial'],
+  const rules: [RegExp, string][] = [
+    [/\b(aerial|drone|birds[-_ ]?eye)\b/, 'exterior-aerial'],
     [/\b(pool|cabana|sundeck)\b/, 'pool'],
     [/\b(lobby|reception|entry|entrance)\b/, 'lobby'],
-    [/\b(gym|fitness|workout)\b/, 'gym'],
+    [/\b(gym|fitness|workout)\b/, 'fitness-center'],
     [/\b(spa|sauna|steam|wellness)\b/, 'spa'],
     [/\b(kitchen|culinary)\b/, 'kitchen'],
-    [/\b(bedroom|primary[-_ ]?suite|master[-_ ]?suite)\b/, 'bedroom'],
+    [/\b(primary[-_ ]?suite|master[-_ ]?suite|primary[-_ ]?bedroom)\b/, 'primary-bedroom'],
+    [/\b(bedroom)\b/, 'bedroom'],
     [/\b(bath(room)?|powder)\b/, 'bathroom'],
-    [/\b(dining|restaurant)\b/, 'dining'],
+    [/\b(dining|restaurant)\b/, 'dining-room'],
     [/\b(bar|cocktail|lounge)\b/, 'lounge'],
     [/\b(clubroom|club[-_ ]?room|social[-_ ]?room)\b/, 'clubroom'],
     [/\b(amenity|amenities|deck|rooftop|terrace)\b/, 'amenity-deck'],
     [/\b(courtyard|garden|green[-_ ]?space)\b/, 'courtyard'],
-    [/\b(view|skyline|oceanfront|waterfront|intracoastal|vista)\b/, 'view'],
-    [/\b(residence|unit|interior|living[-_ ]?room)\b/, 'residence'],
+    [/\b(oceanfront|waterfront)\b/, 'waterfront-view'],
+    [/\b(intracoastal)\b/, 'intracoastal-view'],
+    [/\b(skyline|cityscape)\b/, 'skyline-view'],
+    [/\b(view|vista)\b/, 'waterfront-view'],
+    [/\b(living[-_ ]?room)\b/, 'living-room'],
+    [/\b(residence|unit|interior)\b/, 'living-room'],
+    [/\b(night)\b/, 'night-exterior'],
     [/\b(hero|cover|banner|exterior|facade|building)\b/, 'exterior'],
   ];
-  for (const [re, label] of rules) if (re.test(hay)) return label;
+  for (const [re, desc] of rules) if (re.test(hay)) return desc;
   return undefined;
 }

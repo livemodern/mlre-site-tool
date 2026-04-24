@@ -1,65 +1,79 @@
-export type ImageLabel =
-  | 'condos'
-  | 'exterior'
-  | 'aerial'
-  | 'pool'
-  | 'lobby'
-  | 'gym'
-  | 'view'
-  | 'residence'
-  | 'kitchen'
-  | 'amenity-deck'
-  | 'clubroom'
-  | 'spa'
-  | 'dining'
-  | 'bar'
-  | 'courtyard'
-  | 'bedroom'
-  | 'bathroom'
-  | 'lounge'
-  | 'other';
+export type Category =
+  | 'HERO'
+  | 'AMENITY'
+  | 'FEATURE'
+  | 'EXTERIOR'
+  | 'INTERIOR'
+  | 'FLOORPLAN'
+  | 'LISTING'
+  | 'LIFESTYLE'
+  | 'GALLERY';
 
-export const IMAGE_LABELS: ImageLabel[] = [
-  'condos',
-  'exterior',
-  'aerial',
+export const CATEGORIES: Category[] = [
+  'HERO',
+  'AMENITY',
+  'FEATURE',
+  'EXTERIOR',
+  'INTERIOR',
+  'FLOORPLAN',
+  'LISTING',
+  'LIFESTYLE',
+  'GALLERY',
+];
+
+/**
+ * Common descriptors for the dropdown. Free-text is also allowed via the
+ * "custom..." override field. Each implies a Category (see inferCategory).
+ */
+export const COMMON_DESCRIPTORS: string[] = [
   'pool',
+  'pool-aerial',
+  'lap-pool',
+  'rooftop-pool',
   'lobby',
+  'lobby-interior',
+  'entrance',
   'gym',
-  'view',
-  'residence',
-  'kitchen',
-  'amenity-deck',
-  'clubroom',
+  'fitness-center',
   'spa',
-  'dining',
-  'bar',
-  'courtyard',
+  'spa-treatment-room',
+  'kitchen',
+  'kitchen-interior',
+  'primary-bedroom',
   'bedroom',
   'bathroom',
+  'primary-bathroom',
+  'living-room',
+  'dining-room',
+  'private-dining-room',
+  'bar',
   'lounge',
-  'other',
+  'clubroom',
+  'amenity-deck',
+  'rooftop',
+  'courtyard',
+  'terrace',
+  'waterfront-view',
+  'skyline-view',
+  'oceanfront-view',
+  'intracoastal-view',
+  'exterior',
+  'exterior-aerial',
+  'building-facade',
+  'night-exterior',
 ];
 
 export interface ScrapedImage {
-  /** Original source URL of the image */
   url: string;
-  /** Source page the image came from */
   sourcePage: string;
-  /** alt attribute if present on the page */
   altText?: string;
-  /** Width/height if available from HTML attributes */
   width?: number;
-  /** Width/height if available from HTML attributes */
   height?: number;
-  /** Perceptual-ish fingerprint for duplicate detection (URL-based) */
   fingerprint: string;
-  /** Estimated file size if reported by Content-Length header */
   estimatedSize?: number;
-  /** Whether the image looks promising (large enough, not an icon) */
   isLikelyHero: boolean;
-  /** Heuristic label guess based on alt text / filename */
-  suggestedLabel?: ImageLabel;
+  /** Heuristic descriptor guess based on alt text / filename */
+  suggestedDescriptor?: string;
 }
 
 export interface ScrapeRequest {
@@ -75,20 +89,27 @@ export interface ProcessRequest {
   imageUrl: string;
   communityName: string;
   city: string;
-  label: ImageLabel;
-  variant: 'hero' | 'standard';
-  /** Optional index if there are multiple images with the same label (view-1, view-2) */
+  state?: string;
+  address?: string;
+  category: Category;
+  descriptor?: string;
+  /** For duplicate descriptors, append -1, -2... */
   index?: number;
+  /** For floorplans */
+  unitId?: string;
+  beds?: string;
+  baths?: string;
+  sqft?: string;
+  variant: 'hero' | 'standard';
 }
 
 export interface ProcessResponse {
   filename: string;
-  mimeType: 'image/webp';
+  mimeType: 'image/webp' | 'image/jpeg';
   width: number;
   height: number;
   byteLength: number;
   altText: string;
-  /** Base64-encoded binary */
   data: string;
 }
 
@@ -98,7 +119,8 @@ export interface ManifestRow {
   width: number;
   height: number;
   fileSize: number;
-  label: string;
+  category: Category;
+  descriptor: string;
   altText: string;
   variant: 'hero' | 'standard';
 }

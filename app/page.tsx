@@ -3,42 +3,61 @@
 import { useMemo, useState } from 'react';
 import JSZip from 'jszip';
 import {
-  IMAGE_LABELS,
-  type ImageLabel,
+  CATEGORIES,
+  COMMON_DESCRIPTORS,
+  type Category,
   type ScrapedImage,
   type ProcessResponse,
   type ManifestRow,
 } from '@/lib/types';
-import { computeLabelIndices } from '@/lib/seo';
+import {
+  buildFilename,
+  computeDescriptorIndices,
+  inferCategory,
+  normalizeBuildingName,
+  slugify,
+} from '@/lib/seo';
 
 type Step = 'input' | 'review' | 'processing' | 'done';
 
 interface SelectedImage extends ScrapedImage {
+  id: string; // stable unique ID for this image
   selected: boolean;
-  label: ImageLabel;
+  descriptor: string;
+  category: Category;
   isHero: boolean;
-  thumbBlobUrl?: string;
+  // FLOORPLAN-only fields
+  unitId?: string;
+  beds?: string;
+  baths?: string;
+  sqft?: string;
 }
 
 export default function Home() {
   const [step, setStep] = useState<Step>('input');
+
+  // Step 1 inputs
   const [communityName, setCommunityName] = useState('');
   const [city, setCity] = useState('');
+  const [state, setState] = useState('FL');
+  const [address, setAddress] = useState('');
   const [urlsText, setUrlsText] = useState('');
   const [manualFiles, setManualFiles] = useState<File[]>([]);
 
+  // Scrape state
   const [scraping, setScraping] = useState(false);
   const [scrapeError, setScrapeError] = useState<string | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
   const [images, setImages] = useState<SelectedImage[]>([]);
 
+  // Process state
   const [progress, setProgress] = useState({ done: 0, total: 0, label: '' });
   const [processErrors, setProcessErrors] = useState<string[]>([]);
   const [zipBlobUrl, setZipBlobUrl] = useState<string | null>(null);
   const [zipFilename, setZipFilename] = useState<string>('images.zip');
 
   /* -------------------------------------------------------------- */
-  /*  Step 1: Input → Scrape                                        */
+  /*  Step 1 -> Scrape                                              */
   /* -------------------------------------------------------------- */
 
   async function handleScrape() {
@@ -82,28 +101,37 @@ export default function Home() {
         scrapeWarnings = data.warnings;
       }
 
-      // Prepend manual uploads as synthetic ScrapedImages using object URLs.
-      // We process these client-side by sending the blob URL up through... actually
-      // we can't send local blob URLs to the server. So we treat them specially
-      // and just skip them here — instead the user would upload directly into
-      // a separate manual-upload flow. For now, we surface a warning that manual
-      // uploads aren't fully wired up and focus on the scrape path.
       if (manualFiles.length > 0) {
         scrapeWarnings.push(
           `${manualFiles.length} manual upload(s) detected — manual upload is not yet wired through the processing pipeline. Use source URLs for now.`,
         );
       }
 
-      const prepared: SelectedImage[] = scraped.map((img, i) => ({
-        ...img,
-        selected: true,
-        label: img.suggestedLabel ?? 'other',
-        isHero: i === 0 && img.isLikelyHero, // tentatively pick first likely-hero
-      }));
+      const prepared: SelectedImage[] = scraped.map((img, i) => {
+        const descriptor = img.suggestedDescriptor ?? 'exterior';
+        return {
+          ...img,
+          id: `img-${i}-${img.fingerprint}`,
+          selected: true,
+          descriptor,
+          category: inferCategory(descriptor),
+          isHero: i === 0 && img.isLikelyHero,
+        };
+      });
 
-      // If nothing was marked hero by the heuristic, mark the first one as hero
-      if (prepared.length > 0 && !prepared.some((p) => p.isHero)) {
-        prepared[0].isHero = true;
+      // Guarantee exactly one hero is marked (radio-button invariant)
+      if (prepared.length > 0) {
+        const heroCount = prepared.filter((p) => p.isHero).length;
+        if (heroCount === 0) prepared[0].isHero = true;
+        if (heroCount > 1) {
+          let seenFirst = false;
+          for (const p of prepared) {
+            if (p.isHero) {
+              if (seenFirst) p.isHero = false;
+              else seenFirst = true;
+            }
+          }
+        }
       }
 
       setImages(prepared);
@@ -121,24 +149,60 @@ export default function Home() {
   /*  Step 2 helpers                                                */
   /* -------------------------------------------------------------- */
 
+  const heroImage = useMemo(
+    () => images.find((i) => i.isHero && i.selected),
+    [images],
+  );
   const selectedCount = images.filter((i) => i.selected).length;
-  const heroImage = images.find((i) => i.isHero && i.selected);
 
-  function toggleSelect(idx: number) {
+  function toggleSelect(id: string) {
     setImages((imgs) =>
-      imgs.map((img, i) => (i === idx ? { ...img, selected: !img.selected } : img)),
+      imgs.map((img) =>
+        img.id === id ? { ...img, selected: !img.selected } : img,
+      ),
     );
   }
 
-  function setImageLabel(idx: number, label: ImageLabel) {
+  function setDescriptor(id: string, descriptor: string) {
     setImages((imgs) =>
-      imgs.map((img, i) => (i === idx ? { ...img, label } : img)),
+      imgs.map((img) => {
+        if (img.id !== id) return img;
+        // Only auto-update category from descriptor if current category was inferred
+        // (keeps manual overrides). We detect auto mode by checking if the current
+        // category matches inferCategory(previousDescriptor).
+        const wasAuto = img.category === inferCategory(img.descriptor);
+        return {
+          ...img,
+          descriptor,
+          category: wasAuto ? inferCategory(descriptor) : img.category,
+        };
+      }),
     );
   }
 
-  function setHero(idx: number) {
+  function setCategory(id: string, category: Category) {
     setImages((imgs) =>
-      imgs.map((img, i) => ({ ...img, isHero: i === idx, selected: i === idx ? true : img.selected })),
+      imgs.map((img) => (img.id === id ? { ...img, category } : img)),
+    );
+  }
+
+  function setFloorplanField(
+    id: string,
+    field: 'unitId' | 'beds' | 'baths' | 'sqft',
+    value: string,
+  ) {
+    setImages((imgs) =>
+      imgs.map((img) => (img.id === id ? { ...img, [field]: value } : img)),
+    );
+  }
+
+  function setHero(id: string) {
+    setImages((imgs) =>
+      imgs.map((img) => ({
+        ...img,
+        isHero: img.id === id,
+        selected: img.id === id ? true : img.selected,
+      })),
     );
   }
 
@@ -151,12 +215,17 @@ export default function Home() {
   /* -------------------------------------------------------------- */
 
   async function handleProcess() {
-    if (!heroImage) {
-      setProcessErrors(['Please select exactly one hero image before processing.']);
+    // Capture the exact image the user picked as hero at button-click time.
+    const currentHero = images.find((i) => i.isHero && i.selected);
+
+    if (!currentHero) {
+      setProcessErrors([
+        'Please select a hero image (radio button) and make sure it is checked as Included.',
+      ]);
       return;
     }
-    if (selectedCount < 2) {
-      setProcessErrors(['Select at least one hero and one gallery image.']);
+    if (selectedCount < 1) {
+      setProcessErrors(['Select at least one image.']);
       return;
     }
 
@@ -166,59 +235,62 @@ export default function Home() {
     const zip = new JSZip();
     const heroFolder = zip.folder('hero')!;
     const galleryFolder = zip.folder('gallery')!;
+    const floorplansFolder = zip.folder('floorplans')!;
 
     const selected = images.filter((i) => i.selected);
-    const gallery = selected.filter((i) => !i.isHero);
+    const nonHero = selected.filter((i) => i.id !== currentHero.id);
 
-    // Compute per-label indices for the gallery so repeat labels become view-1, view-2
-    const galleryIndices = computeLabelIndices(gallery.map((g) => g.label));
+    // Compute descriptor indices so duplicates get -1, -2, -3 suffixes.
+    // Only applies to categories that use descriptors in filenames (everything
+    // except HERO, FEATURE, FLOORPLAN).
+    const indexableDescriptors = nonHero.map((img) =>
+      img.category === 'FEATURE' || img.category === 'FLOORPLAN'
+        ? `__${img.category}__` // don't index FEATURE/FLOORPLAN via this path
+        : img.descriptor,
+    );
+    const nonHeroIndices = computeDescriptorIndices(indexableDescriptors);
 
-    setProgress({ done: 0, total: selected.length, label: '' });
+    const total = 1 + nonHero.length;
+    setProgress({ done: 0, total, label: currentHero.url });
 
     const manifest: ManifestRow[] = [];
     const altTextLines: string[] = [];
     const errors: string[] = [];
 
-    // Process hero first: special rule — use label "condos" unless the user
-    // explicitly chose aerial or exterior (which are similarly overview-y).
-    const heroLabel: ImageLabel =
-      heroImage.label === 'aerial' || heroImage.label === 'exterior'
-        ? heroImage.label
-        : 'condos';
-
+    // ---- Hero: ALWAYS goes to /hero/ with the URL the user picked ----
     const heroResult = await processOne({
-      imageUrl: heroImage.url,
+      imageUrl: currentHero.url,
       communityName,
       city,
-      label: heroLabel,
+      state,
+      address,
+      category: 'HERO',
       variant: 'hero',
-      index: 0,
     });
-
     if ('error' in heroResult) {
       errors.push(heroResult.error);
     } else {
       heroFolder.file(heroResult.filename, base64ToUint8(heroResult.data));
       manifest.push({
         filename: `hero/${heroResult.filename}`,
-        originalUrl: heroImage.url,
+        originalUrl: currentHero.url,
         width: heroResult.width,
         height: heroResult.height,
         fileSize: heroResult.byteLength,
-        label: heroLabel,
+        category: 'HERO',
+        descriptor: 'hero',
         altText: heroResult.altText,
         variant: 'hero',
       });
       altTextLines.push(`${heroResult.filename}\t${heroResult.altText}`);
     }
-    setProgress((p) => ({ ...p, done: p.done + 1, label: heroImage.url }));
+    setProgress((p) => ({ ...p, done: p.done + 1 }));
 
-    // Process gallery images in parallel batches. Pro plan has plenty of
-    // serverless capacity, and each call is independent.
+    // ---- Non-hero images: parallel batches of 5 ----
     const CONCURRENCY = 5;
-    for (let i = 0; i < gallery.length; i += CONCURRENCY) {
-      const batch = gallery.slice(i, i + CONCURRENCY);
-      const batchIdx = galleryIndices.slice(i, i + CONCURRENCY);
+    for (let i = 0; i < nonHero.length; i += CONCURRENCY) {
+      const batch = nonHero.slice(i, i + CONCURRENCY);
+      const batchIdx = nonHeroIndices.slice(i, i + CONCURRENCY);
 
       const results = await Promise.all(
         batch.map((img, k) =>
@@ -226,9 +298,16 @@ export default function Home() {
             imageUrl: img.url,
             communityName,
             city,
-            label: img.label,
-            variant: 'standard',
+            state,
+            address,
+            category: img.category,
+            descriptor: img.descriptor,
             index: batchIdx[k],
+            unitId: img.unitId,
+            beds: img.beds,
+            baths: img.baths,
+            sqft: img.sqft,
+            variant: 'standard',
           }),
         ),
       );
@@ -239,14 +318,17 @@ export default function Home() {
         if ('error' in r) {
           errors.push(r.error);
         } else {
-          galleryFolder.file(r.filename, base64ToUint8(r.data));
+          const folder =
+            src.category === 'FLOORPLAN' ? floorplansFolder : galleryFolder;
+          folder.file(r.filename, base64ToUint8(r.data));
           manifest.push({
-            filename: `gallery/${r.filename}`,
+            filename: `${src.category === 'FLOORPLAN' ? 'floorplans' : 'gallery'}/${r.filename}`,
             originalUrl: src.url,
             width: r.width,
             height: r.height,
             fileSize: r.byteLength,
-            label: src.label,
+            category: src.category,
+            descriptor: src.descriptor,
             altText: r.altText,
             variant: 'standard',
           });
@@ -256,8 +338,9 @@ export default function Home() {
       }
     }
 
-    // Build manifest.csv
-    const csvHeader = 'filename,original_url,width,height,file_size,label,alt_text,variant';
+    // Manifest CSV
+    const csvHeader =
+      'filename,original_url,width,height,file_size,category,descriptor,alt_text,variant';
     const csvBody = manifest
       .map((r) =>
         [
@@ -266,7 +349,8 @@ export default function Home() {
           r.width,
           r.height,
           r.fileSize,
-          r.label,
+          r.category,
+          r.descriptor,
           csvEscape(r.altText),
           r.variant,
         ].join(','),
@@ -279,11 +363,8 @@ export default function Home() {
 
     const blob = await zip.generateAsync({ type: 'blob' });
     const url = URL.createObjectURL(blob);
-    const slug = communityName
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-|-$/g, '');
-    setZipFilename(`${slug || 'community'}-images.zip`);
+    const slug = slugify(communityName) || 'community';
+    setZipFilename(`${slug}-images.zip`);
     setZipBlobUrl(url);
     setProcessErrors(errors);
     setStep('done');
@@ -314,6 +395,10 @@ export default function Home() {
           setCommunityName={setCommunityName}
           city={city}
           setCity={setCity}
+          stateVal={state}
+          setStateVal={setState}
+          address={address}
+          setAddress={setAddress}
           urlsText={urlsText}
           setUrlsText={setUrlsText}
           manualFiles={manualFiles}
@@ -327,12 +412,15 @@ export default function Home() {
       {step === 'review' && (
         <ReviewStep
           images={images}
+          heroImage={heroImage}
           warnings={warnings}
           communityName={communityName}
           city={city}
           selectedCount={selectedCount}
           onToggle={toggleSelect}
-          onLabel={setImageLabel}
+          onDescriptor={setDescriptor}
+          onCategory={setCategory}
+          onFloorplanField={setFloorplanField}
           onHero={setHero}
           onSelectAll={selectAll}
           onBack={() => setStep('input')}
@@ -404,6 +492,10 @@ function InputStep(props: {
   setCommunityName: (s: string) => void;
   city: string;
   setCity: (s: string) => void;
+  stateVal: string;
+  setStateVal: (s: string) => void;
+  address: string;
+  setAddress: (s: string) => void;
   urlsText: string;
   setUrlsText: (s: string) => void;
   manualFiles: File[];
@@ -415,12 +507,12 @@ function InputStep(props: {
   return (
     <section className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
       <div className="grid gap-6 md:grid-cols-2">
-        <Field label="Community name" hint="e.g. Cityplace South Tower">
+        <Field label="Community name" hint="e.g. The Bristol Palm Beach — the article 'The' is stripped automatically.">
           <input
             className="input"
             value={props.communityName}
             onChange={(e) => props.setCommunityName(e.target.value)}
-            placeholder="Olara"
+            placeholder="CityPlace South Tower"
           />
         </Field>
         <Field label="City" hint="e.g. West Palm Beach">
@@ -429,6 +521,25 @@ function InputStep(props: {
             value={props.city}
             onChange={(e) => props.setCity(e.target.value)}
             placeholder="West Palm Beach"
+          />
+        </Field>
+        <Field label="State" hint="Used in alt text only. Default: FL">
+          <input
+            className="input"
+            value={props.stateVal}
+            onChange={(e) => props.setStateVal(e.target.value)}
+            placeholder="FL"
+          />
+        </Field>
+        <Field
+          label="Street address (optional)"
+          hint="Used in HERO alt text: e.g. '1100 S Flagler Dr'"
+        >
+          <input
+            className="input"
+            value={props.address}
+            onChange={(e) => props.setAddress(e.target.value)}
+            placeholder="1100 S Flagler Dr"
           />
         </Field>
       </div>
@@ -442,13 +553,13 @@ function InputStep(props: {
           className="input h-40 font-mono text-sm"
           value={props.urlsText}
           onChange={(e) => props.setUrlsText(e.target.value)}
-          placeholder={`https://example.com/olara\nhttps://example.com/olara/amenities\nhttps://example.com/olara/gallery`}
+          placeholder={`https://example.com/bristol\nhttps://example.com/bristol/amenities\nhttps://example.com/bristol/gallery`}
         />
       </Field>
 
       <Field
         label="Optional: manual image upload"
-        hint="Images you already have on disk. (Note: server-side processing of local files isn't wired yet — for now upload them to an accessible URL.)"
+        hint="Images you already have on disk. (Note: local-file processing is not yet wired — for now upload them to an accessible URL.)"
         className="mt-6"
       >
         <input
@@ -537,18 +648,24 @@ function Field({
 
 function ReviewStep(props: {
   images: SelectedImage[];
+  heroImage?: SelectedImage;
   warnings: string[];
   communityName: string;
   city: string;
   selectedCount: number;
-  onToggle: (i: number) => void;
-  onLabel: (i: number, l: ImageLabel) => void;
-  onHero: (i: number) => void;
+  onToggle: (id: string) => void;
+  onDescriptor: (id: string, d: string) => void;
+  onCategory: (id: string, c: Category) => void;
+  onFloorplanField: (
+    id: string,
+    f: 'unitId' | 'beds' | 'baths' | 'sqft',
+    v: string,
+  ) => void;
+  onHero: (id: string) => void;
   onSelectAll: (on: boolean) => void;
   onBack: () => void;
   onProcess: () => void;
 }) {
-  // Duplicate groups (by fingerprint)
   const dupeKeys = useMemo(() => {
     const seen = new Map<string, number>();
     props.images.forEach((img) => {
@@ -560,6 +677,19 @@ function ReviewStep(props: {
     });
     return dupes;
   }, [props.images]);
+
+  // Preview hero filename
+  const heroFilename = props.heroImage
+    ? buildFilename({
+        communityName: props.communityName,
+        city: props.city,
+        category: 'HERO',
+      })
+    : '—';
+
+  const normalized = props.communityName
+    ? normalizeBuildingName(props.communityName, props.city)
+    : '—';
 
   return (
     <section className="space-y-6">
@@ -574,20 +704,30 @@ function ReviewStep(props: {
         </div>
       )}
 
-      <div className="rounded-md border border-slate-200 bg-white p-4">
-        <p className="text-sm text-slate-700">
-          Found <strong>{props.images.length}</strong> images across your sources.
-          Pick a <strong>hero</strong> (will be cropped to 2560×895), confirm
-          which images to keep in the gallery (566×500), and check labels. The
-          hero will automatically be named with the{' '}
-          <code className="rounded bg-slate-100 px-1">condos</code> descriptor per
-          the Modern Living naming rule.
-        </p>
-        <p className="mt-2 rounded bg-amber-50 p-2 text-xs text-amber-800">
-          Copyright reminder: images scraped from developer / third-party sites may
-          be subject to copyright. Use only where you have rights or a Modern Living
-          marketing agreement in place.
-        </p>
+      <div className="rounded-md border border-slate-200 bg-white p-4 text-sm text-slate-700">
+        <div>
+          Found <strong>{props.images.length}</strong> images. Building slug:{' '}
+          <code className="rounded bg-slate-100 px-1">{normalized}</code>
+        </div>
+        <div className="mt-2">
+          Hero will be saved as{' '}
+          <code className="rounded bg-slate-100 px-1">hero/{heroFilename}</code>{' '}
+          at 2560×895. Other images are resized so the longest side is 566px
+          (aspect preserved, no crop).
+        </div>
+        {props.heroImage && (
+          <div className="mt-2 flex items-center gap-2 rounded bg-teal-50 p-2">
+            <span className="inline-block h-2 w-2 rounded-full bg-teal-600" />
+            <span className="text-xs text-teal-900">
+              Hero source:{' '}
+              <span className="break-all font-mono">{props.heroImage.url}</span>
+            </span>
+          </div>
+        )}
+        <div className="mt-2 rounded bg-amber-50 p-2 text-xs text-amber-800">
+          Copyright reminder: images scraped from developer or third-party sites
+          may be subject to copyright. Use only where Modern Living has rights.
+        </div>
       </div>
 
       <div className="flex items-center justify-between">
@@ -605,15 +745,18 @@ function ReviewStep(props: {
       </div>
 
       <div className="thumb-grid">
-        {props.images.map((img, idx) => (
+        {props.images.map((img) => (
           <ThumbCard
-            key={`${img.fingerprint}-${idx}`}
+            key={img.id}
             img={img}
-            idx={idx}
+            communityName={props.communityName}
+            city={props.city}
             isDupe={dupeKeys.has(img.fingerprint)}
-            onToggle={() => props.onToggle(idx)}
-            onLabel={(l) => props.onLabel(idx, l)}
-            onHero={() => props.onHero(idx)}
+            onToggle={() => props.onToggle(img.id)}
+            onDescriptor={(d) => props.onDescriptor(img.id, d)}
+            onCategory={(c) => props.onCategory(img.id, c)}
+            onFloorplanField={(f, v) => props.onFloorplanField(img.id, f, v)}
+            onHero={() => props.onHero(img.id)}
           />
         ))}
       </div>
@@ -628,7 +771,7 @@ function ReviewStep(props: {
         <button
           onClick={props.onProcess}
           className="rounded-lg bg-teal-700 px-5 py-2.5 text-sm font-medium text-white hover:bg-teal-800 disabled:opacity-50"
-          disabled={props.selectedCount < 2}
+          disabled={props.selectedCount < 1 || !props.heroImage}
         >
           Process {props.selectedCount} image{props.selectedCount === 1 ? '' : 's'}
         </button>
@@ -639,13 +782,31 @@ function ReviewStep(props: {
 
 function ThumbCard(props: {
   img: SelectedImage;
-  idx: number;
+  communityName: string;
+  city: string;
   isDupe: boolean;
   onToggle: () => void;
-  onLabel: (l: ImageLabel) => void;
+  onDescriptor: (d: string) => void;
+  onCategory: (c: Category) => void;
+  onFloorplanField: (f: 'unitId' | 'beds' | 'baths' | 'sqft', v: string) => void;
   onHero: () => void;
 }) {
   const { img } = props;
+
+  const previewFilename = img.isHero
+    ? buildFilename({
+        communityName: props.communityName,
+        city: props.city,
+        category: 'HERO',
+      })
+    : buildFilename({
+        communityName: props.communityName,
+        city: props.city,
+        category: img.category,
+        descriptor: img.descriptor,
+        unitId: img.unitId,
+      });
+
   return (
     <div
       className={`overflow-hidden rounded-lg border bg-white transition ${
@@ -653,8 +814,6 @@ function ThumbCard(props: {
       }`}
     >
       <div className="relative aspect-[4/3] bg-slate-100">
-        {/* Using img tag directly so it works with arbitrary external URLs
-            without needing to add domains to next.config.js */}
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
           src={img.url}
@@ -699,23 +858,79 @@ function ThumbCard(props: {
           </label>
         </div>
 
-        <select
-          value={img.label}
-          onChange={(e) => props.onLabel(e.target.value as ImageLabel)}
-          className="w-full rounded border border-slate-200 bg-white px-2 py-1 text-xs"
-        >
-          {IMAGE_LABELS.map((l) => (
-            <option key={l} value={l}>
-              {l}
-            </option>
-          ))}
-        </select>
+        {!img.isHero && (
+          <>
+            <label className="block">
+              <span className="text-[10px] uppercase tracking-wide text-slate-500">
+                Descriptor
+              </span>
+              <input
+                list="common-descriptors"
+                value={img.descriptor}
+                onChange={(e) => props.onDescriptor(e.target.value)}
+                className="mt-0.5 w-full rounded border border-slate-200 bg-white px-2 py-1 text-xs"
+                placeholder="pool, lobby-interior, etc."
+              />
+            </label>
 
-        <div className="truncate text-[10px] text-slate-400" title={img.url}>
-          {img.width && img.height ? `${img.width}×${img.height} · ` : ''}
-          {new URL(img.url).hostname}
+            <label className="block">
+              <span className="text-[10px] uppercase tracking-wide text-slate-500">
+                Category
+              </span>
+              <select
+                value={img.category}
+                onChange={(e) => props.onCategory(e.target.value as Category)}
+                className="mt-0.5 w-full rounded border border-slate-200 bg-white px-2 py-1 text-xs"
+              >
+                {CATEGORIES.filter((c) => c !== 'HERO').map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            {img.category === 'FLOORPLAN' && (
+              <div className="grid grid-cols-2 gap-1">
+                <input
+                  value={img.unitId ?? ''}
+                  onChange={(e) => props.onFloorplanField('unitId', e.target.value)}
+                  placeholder="Unit (e.g. A1)"
+                  className="rounded border border-slate-200 px-2 py-1 text-xs"
+                />
+                <input
+                  value={img.sqft ?? ''}
+                  onChange={(e) => props.onFloorplanField('sqft', e.target.value)}
+                  placeholder="SqFt"
+                  className="rounded border border-slate-200 px-2 py-1 text-xs"
+                />
+                <input
+                  value={img.beds ?? ''}
+                  onChange={(e) => props.onFloorplanField('beds', e.target.value)}
+                  placeholder="BR"
+                  className="rounded border border-slate-200 px-2 py-1 text-xs"
+                />
+                <input
+                  value={img.baths ?? ''}
+                  onChange={(e) => props.onFloorplanField('baths', e.target.value)}
+                  placeholder="BA"
+                  className="rounded border border-slate-200 px-2 py-1 text-xs"
+                />
+              </div>
+            )}
+          </>
+        )}
+
+        <div className="truncate text-[10px] text-slate-400" title={previewFilename}>
+          {previewFilename}
         </div>
       </div>
+
+      <datalist id="common-descriptors">
+        {COMMON_DESCRIPTORS.map((d) => (
+          <option key={d} value={d} />
+        ))}
+      </datalist>
     </div>
   );
 }
@@ -760,9 +975,10 @@ function DoneStep(props: {
       <p className="mt-1 text-sm text-slate-500">
         {props.imagesProcessed} images processed. Hero in{' '}
         <code className="rounded bg-slate-100 px-1">/hero</code>, gallery in{' '}
-        <code className="rounded bg-slate-100 px-1">/gallery</code>, plus{' '}
-        <code className="rounded bg-slate-100 px-1">manifest.csv</code> and{' '}
-        <code className="rounded bg-slate-100 px-1">alt-text.txt</code>.
+        <code className="rounded bg-slate-100 px-1">/gallery</code>, floor plans
+        in <code className="rounded bg-slate-100 px-1">/floorplans</code>. Also
+        includes <code className="rounded bg-slate-100 px-1">manifest.csv</code>{' '}
+        and <code className="rounded bg-slate-100 px-1">alt-text.txt</code>.
       </p>
 
       <a
@@ -801,16 +1017,21 @@ function DoneStep(props: {
 /*  Helpers                                                          */
 /* ================================================================= */
 
-async function processOne(
-  body: {
-    imageUrl: string;
-    communityName: string;
-    city: string;
-    label: ImageLabel;
-    variant: 'hero' | 'standard';
-    index?: number;
-  },
-): Promise<ProcessResponse | { error: string }> {
+async function processOne(body: {
+  imageUrl: string;
+  communityName: string;
+  city: string;
+  state?: string;
+  address?: string;
+  category: Category;
+  descriptor?: string;
+  index?: number;
+  unitId?: string;
+  beds?: string;
+  baths?: string;
+  sqft?: string;
+  variant: 'hero' | 'standard';
+}): Promise<ProcessResponse | { error: string }> {
   try {
     const res = await fetch('/api/process', {
       method: 'POST',

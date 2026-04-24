@@ -15,13 +15,27 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
   }
 
-  const { imageUrl, communityName, city, label, variant, index } = body;
+  const {
+    imageUrl,
+    communityName,
+    city,
+    state,
+    address,
+    category,
+    descriptor,
+    index,
+    unitId,
+    beds,
+    baths,
+    sqft,
+    variant,
+  } = body;
 
-  if (!imageUrl || !communityName || !city || !label || !variant) {
+  if (!imageUrl || !communityName || !city || !category || !variant) {
     return NextResponse.json(
       {
         error:
-          'Missing required fields. Need imageUrl, communityName, city, label, variant.',
+          'Missing required fields. Need imageUrl, communityName, city, category, variant.',
       },
       { status: 400 },
     );
@@ -29,8 +43,28 @@ export async function POST(req: NextRequest) {
 
   try {
     const { buffer, width, height } = await processImage({ imageUrl, variant });
-    const filename = buildFilename({ communityName, city, label, index });
-    const altText = buildAltText({ communityName, city, label, variant });
+
+    const filename = buildFilename({
+      communityName,
+      city,
+      category,
+      descriptor,
+      index,
+      unitId,
+    });
+
+    const altText = buildAltText({
+      communityName,
+      city,
+      state,
+      address,
+      category,
+      descriptor,
+      unitId,
+      beds,
+      baths,
+      sqft,
+    });
 
     const response: ProcessResponse = {
       filename,
