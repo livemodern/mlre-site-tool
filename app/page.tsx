@@ -602,12 +602,12 @@ function InputStep(props: {
           font-size: 0.9rem;
         }
         .input:focus {
-          outline: 2px solid #0f766e;
+          outline: 2px solid #00B2CC;
           outline-offset: -1px;
           border-color: transparent;
         }
         .btn-primary {
-          background: #0f766e;
+          background: #00B2CC;
           color: white;
           border-radius: 0.5rem;
           padding: 0.625rem 1.25rem;
@@ -615,7 +615,7 @@ function InputStep(props: {
           font-weight: 500;
         }
         .btn-primary:hover {
-          background: #115e59;
+          background: #0095ad;
         }
         .btn-primary:disabled {
           opacity: 0.5;

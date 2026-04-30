@@ -6,6 +6,16 @@ module.exports = {
   ],
   theme: {
     extend: {
+      colors: {
+        teal: {
+          50: '#e6f4f7', 100: '#cce9ef', 200: '#99dde6', 300: '#66cfdb', 400: '#33c1d3',
+          500: '#00B2CC', 600: '#00B2CC', 700: '#00B2CC', 800: '#0095ad', 900: '#0D173B',
+        },
+        slate: {
+          50: '#f8fafc', 100: '#f1f5f9', 200: '#e2e8f0', 300: '#cbd5e1', 400: '#94a3b8',
+          500: '#64748b', 600: '#475569', 700: '#334155', 800: '#1e293b', 900: '#0D173B',
+        },
+      },
       fontFamily: {
         sans: ['ui-sans-serif', 'system-ui', '-apple-system', 'Segoe UI', 'Roboto', 'sans-serif'],
       },

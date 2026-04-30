@@ -3,10 +3,10 @@
 @tailwind utilities;
 
 :root {
-  --color-ink: #0f172a;
+  --color-ink: #0D173B;
   --color-muted: #475569;
   --color-line: #e2e8f0;
-  --color-accent: #0f766e;
+  --color-accent: #00B2CC;
 }
 
 html,
